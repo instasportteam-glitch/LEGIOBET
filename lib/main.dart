@@ -1,12 +1,111 @@
+import 'dart:async';
 import 'dart:math' as math;
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
-import 'package:url_launcher/url_launcher.dart';
 
-/// URL, который открывается в WebView — замени на свой.
-const String kStartUrl = 'https://gameproc.legioexercitus.space/';
+
+class WebScreen extends StatefulWidget {
+  const WebScreen({super.key, required this.url});
+
+  final String url;
+
+  @override
+  State<WebScreen> createState() => _WebScreenState();
+}
+
+class _WebScreenState extends State<WebScreen> {
+  InAppWebViewController? _controller;
+  bool _loading = true;
+
+  /// Лоадер убирается максимум через 5 секунд после запуска.
+  Timer? _loaderTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _loaderTimer = Timer(const Duration(seconds: 5), () => _setLoading(false));
+  }
+
+  @override
+  void dispose() {
+    _loaderTimer?.cancel();
+    super.dispose();
+  }
+
+  /// User-Agent мобильного Safari (iPhone, iOS 26).
+
+
+  final _settings = InAppWebViewSettings(
+
+    javaScriptEnabled: true,
+    domStorageEnabled: true,
+    databaseEnabled: true,
+    thirdPartyCookiesEnabled: true,
+    mediaPlaybackRequiresUserGesture: false,
+    allowsInlineMediaPlayback: true,
+    supportZoom: false,
+    useHybridComposition: true,
+    transparentBackground: true,
+  );
+
+  void _setLoading(bool value) {
+    if (mounted && _loading != value) setState(() => _loading = value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop) return;
+        final c = _controller;
+        if (c != null && await c.canGoBack()) {
+          c.goBack();
+        } else {
+          SystemNavigator.pop();
+        }
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: SafeArea(
+          child: Stack(
+            children: [
+              InAppWebView(
+                initialUrlRequest: URLRequest(url: WebUri(widget.url)),
+                initialSettings: _settings,
+                onWebViewCreated: (c) => _controller = c,
+                onLoadStart: (_, url) => debugPrint('[WV] start: $url'),
+                onLoadStop: (_, url) {
+                  debugPrint('[WV] stop: $url');
+                  _setLoading(false);
+                },
+                onReceivedHttpError: (_, request, response) => debugPrint(
+                    '[WV] HTTP ${response.statusCode} ${request.url}'),
+                onConsoleMessage: (_, msg) =>
+                    debugPrint('[WV console] ${msg.messageLevel}: ${msg.message}'),
+                onProgressChanged: (_, progress) {
+                  debugPrint('[WV] progress: $progress');
+                  if (progress >= 100) _setLoading(false);
+                },
+                onReceivedError: (_, request, error) {
+                  debugPrint('[WV] error: ${error.type} ${error.description} ${request.url}');
+                  if (request.isForMainFrame ?? true) _setLoading(false);
+                },
+              ),
+              if (_loading)
+                const ColoredBox(
+                  color: Colors.black,
+                  child: Center(child: BetLoader()),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -20,204 +119,12 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return const MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'B.E.T',
-      home: WebViewScreen(),
+      home: WebScreen(url: 'https://gameproc.legioexercitus.space/'),
     );
   }
 }
 
-class WebViewScreen extends StatefulWidget {
-  const WebViewScreen({super.key});
-
-  @override
-  State<WebViewScreen> createState() => _WebViewScreenState();
-}
-
-class _WebViewScreenState extends State<WebViewScreen> {
-  InAppWebViewController? _controller;
-  PullToRefreshController? _pullToRefresh;
-  bool _isLoading = true;
-
-  /// Схемы, которые открывает сам WebView. Всё остальное (tel:, mailto:,
-  /// tg:, whatsapp:, intent: и т.д.) уходит во внешние приложения.
-  static const _webSchemes = {
-    'http', 'https', 'file', 'about', 'data', 'javascript', 'blob',
-  };
-
-  final InAppWebViewSettings _settings = InAppWebViewSettings(
-    // --- JavaScript / хранилище ---
-    javaScriptEnabled: true,
-    javaScriptCanOpenWindowsAutomatically: true,
-    supportMultipleWindows: true, // нужно для onCreateWindow (target=_blank)
-    domStorageEnabled: true,
-    databaseEnabled: true,
-    cacheEnabled: true,
-    cacheMode: CacheMode.LOAD_DEFAULT,
-    thirdPartyCookiesEnabled: true,
-    sharedCookiesEnabled: true, // iOS: общие cookies с HTTPCookieStorage
-
-    // --- Медиа ---
-    mediaPlaybackRequiresUserGesture: false,
-    allowsInlineMediaPlayback: true,
-    allowsPictureInPictureMediaPlayback: true,
-    iframeAllowFullscreen: true,
-
-    // --- Навигация ---
-    useShouldOverrideUrlLoading: true,
-    useOnDownloadStart: true,
-    allowsBackForwardNavigationGestures: true, // iOS: свайп назад/вперёд
-    allowsLinkPreview: false,
-
-    // --- Зум / скролл / внешний вид ---
-    supportZoom: false,
-
-    displayZoomControls: false,
-    disallowOverScroll: false,
-    verticalScrollBarEnabled: false,
-    horizontalScrollBarEnabled: false,
-    transparentBackground: true,
-    preferredContentMode: UserPreferredContentMode.MOBILE,
-
-    // --- Безопасность / контент ---
-    mixedContentMode: MixedContentMode.MIXED_CONTENT_COMPATIBILITY_MODE,
-    allowFileAccessFromFileURLs: false,
-    allowUniversalAccessFromFileURLs: false,
-
-    // Отладка через Safari/Chrome DevTools только в debug-сборке.
-    isInspectable: kDebugMode,
-  );
-
-  @override
-  void initState() {
-    super.initState();
-    _pullToRefresh = PullToRefreshController(
-      settings: PullToRefreshSettings(color: Colors.white),
-      onRefresh: () async {
-        final c = _controller;
-        if (c == null) return;
-        if (defaultTargetPlatform == TargetPlatform.android) {
-          await c.reload();
-        } else {
-          final url = await c.getUrl();
-          if (url != null) {
-            await c.loadUrl(urlRequest: URLRequest(url: url));
-          }
-        }
-      },
-    );
-  }
-
-  void _setLoading(bool value) {
-    if (mounted && _isLoading != value) setState(() => _isLoading = value);
-  }
-
-  void _finishLoading() {
-    _pullToRefresh?.endRefreshing();
-    _setLoading(false);
-  }
-
-  Future<void> _openExternal(Uri uri) async {
-    try {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    } catch (e) {
-      debugPrint('Не удалось открыть $uri: $e');
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return PopScope(
-      canPop: false,
-      onPopInvokedWithResult: (didPop, _) async {
-        if (didPop) return;
-        final c = _controller;
-        if (c != null && await c.canGoBack()) {
-          await c.goBack();
-        }
-      },
-      child: Scaffold(
-        backgroundColor: Colors.black,
-        body: SafeArea(
-          child: Stack(
-            children: [
-              InAppWebView(
-                initialUrlRequest: URLRequest(url: WebUri(kStartUrl)),
-                initialSettings: _settings,
-                pullToRefreshController: _pullToRefresh,
-                onWebViewCreated: (c) => _controller = c,
-                onLoadStart: (_, __) => _setLoading(true),
-                onLoadStop: (_, __) => _finishLoading(),
-                onProgressChanged: (_, progress) {
-                  if (progress >= 100) _finishLoading();
-                },
-                onReceivedError: (_, request, error) {
-                  debugPrint('WebView error: ${error.type} ${error.description}');
-                  if (request.isForMainFrame ?? true) _finishLoading();
-                },
-
-                // Внешние схемы (tel:, mailto:, tg:, …) — в системные приложения.
-                shouldOverrideUrlLoading: (controller, action) async {
-                  final uri = action.request.url;
-                  if (uri == null) return NavigationActionPolicy.ALLOW;
-                  if (_webSchemes.contains(uri.scheme.toLowerCase())) {
-                    return NavigationActionPolicy.ALLOW;
-                  }
-                  await _openExternal(uri);
-                  return NavigationActionPolicy.CANCEL;
-                },
-
-                // target="_blank" / window.open — открываем в этом же WebView.
-                onCreateWindow: (controller, action) async {
-                  final url = action.request.url;
-                  if (url != null) {
-                    await controller.loadUrl(urlRequest: URLRequest(url: url));
-                  }
-                  return false;
-                },
-
-                // Загрузки файлов — отдаём системе.
-                onDownloadStartRequest: (_, request) async {
-                  await _openExternal(request.url);
-                },
-
-                // Камера / микрофон и т.п. для сайта.
-                onPermissionRequest: (_, request) async {
-                  return PermissionResponse(
-                    resources: request.resources,
-                    action: PermissionResponseAction.GRANT,
-                  );
-                },
-
-                // iOS: если процесс WebKit упал — перезагружаем страницу.
-                onWebContentProcessDidTerminate: (controller) async {
-                  await controller.reload();
-                },
-                // Android: то же самое для рендер-процесса.
-                onRenderProcessGone: (controller, _) async {
-                  await controller.reload();
-                },
-              ),
-              IgnorePointer(
-                ignoring: !_isLoading,
-                child: AnimatedOpacity(
-                  opacity: _isLoading ? 1 : 0,
-                  duration: const Duration(milliseconds: 350),
-                  child: const ColoredBox(
-                    color: Colors.black,
-                    child: Center(child: BetLoader()),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// Лоадер: "B . E . T" — буквы по очереди увеличиваются и уменьшаются.
-class BetLoader extends StatefulWidget {
+ class BetLoader extends StatefulWidget {
   const BetLoader({
     super.key,
     this.color = Colors.white,
@@ -239,7 +146,7 @@ class _BetLoaderState extends State<BetLoader>
     with SingleTickerProviderStateMixin {
   static const _letters = ['B', 'E', 'T'];
   late final AnimationController _ctrl =
-      AnimationController(vsync: this, duration: widget.duration)..repeat();
+  AnimationController(vsync: this, duration: widget.duration)..repeat();
 
   @override
   void dispose() {
